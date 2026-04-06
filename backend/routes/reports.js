@@ -15,36 +15,37 @@ router.get('/logs.csv', requireRole('admin', 'faculty'), async (req, res) => {
     const params     = [];
 
     if (req.query.from) {
-      conditions.push('l.timestamp >= ?');
       params.push(new Date(req.query.from));
+      conditions.push(`l.timestamp >= $${params.length}`);
     }
     if (req.query.to) {
-      conditions.push('l.timestamp <= ?');
       params.push(new Date(req.query.to));
+      conditions.push(`l.timestamp <= $${params.length}`);
     }
     if (req.query.status) {
-      conditions.push('l.status = ?');
       params.push(req.query.status);
+      conditions.push(`l.status = $${params.length}`);
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const [rows] = await pool.execute(
-      `SELECT l.id, u.name AS user_name, u.email, u.role,
+    const query = `
+      SELECT l.id, u.name AS user_name, u.email, u.role,
               l.timestamp, l.ip_address, l.user_agent, l.status, l.action
        FROM logs l
        LEFT JOIN users u ON l.user_id = u.id
        ${where}
        ORDER BY l.timestamp DESC
-       LIMIT 10000`,
-      params
-    );
+       LIMIT 10000
+    `;
 
-    // Build CSV manually (no library dependency issues)
+    const result = await pool.query(query, params);
+
+    // Build CSV manually
     const headers = ['ID','User Name','Email','Role','Timestamp','IP Address','User Agent','Status','Action'];
     const csvRows = [
       headers.join(','),
-      ...rows.map(r =>
+      ...result.rows.map(r =>
         [
           r.id,
           `"${(r.user_name || '').replace(/"/g, '""')}"`,
@@ -77,27 +78,27 @@ router.get('/logs.csv', requireRole('admin', 'faculty'), async (req, res) => {
  */
 router.get('/summary', requireRole('admin', 'faculty'), async (req, res) => {
   try {
-    const [logStats] = await pool.execute(`
+    const logStatsRes = await pool.query(`
       SELECT
         COUNT(*) AS total_logs,
-        SUM(status = 'success') AS successful,
-        SUM(status = 'failure') AS failed,
+        COUNT(*) FILTER (WHERE status = 'success') AS successful,
+        COUNT(*) FILTER (WHERE status = 'failure') AS failed,
         COUNT(DISTINCT user_id) AS unique_users
       FROM logs
-      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE timestamp >= NOW() - INTERVAL '30 days'
     `);
 
-    const [alertStats] = await pool.execute(`
+    const alertStatsRes = await pool.query(`
       SELECT
         COUNT(*) AS total_alerts,
-        SUM(severity = 'high') AS high,
-        SUM(severity = 'medium') AS medium,
-        SUM(severity = 'low') AS low
+        COUNT(*) FILTER (WHERE severity = 'high') AS high,
+        COUNT(*) FILTER (WHERE severity = 'medium') AS medium,
+        COUNT(*) FILTER (WHERE severity = 'low') AS low
       FROM alerts
-      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE timestamp >= NOW() - INTERVAL '30 days'
     `);
 
-    const [topRisk] = await pool.execute(`
+    const topRiskRes = await pool.query(`
       SELECT name, email, role, risk_score,
         CASE
           WHEN risk_score >= 60 THEN 'high'
@@ -111,9 +112,9 @@ router.get('/summary', requireRole('admin', 'faculty'), async (req, res) => {
 
     res.json({
       period: '30 days',
-      logs:   logStats[0],
-      alerts: alertStats[0],
-      top_risk_users: topRisk
+      logs:   logStatsRes.rows[0],
+      alerts: alertStatsRes.rows[0],
+      top_risk_users: topRiskRes.rows
     });
   } catch (err) {
     console.error('[Summary Error]', err);

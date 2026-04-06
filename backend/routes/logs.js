@@ -10,7 +10,6 @@ router.use(verifyToken);
 /**
  * GET /api/logs
  * Returns paginated activity logs.
- * Query params: page, limit, user_id, status, from, to, action
  */
 router.get('/', requireRole('admin', 'faculty'), async (req, res) => {
   try {
@@ -23,50 +22,53 @@ router.get('/', requireRole('admin', 'faculty'), async (req, res) => {
     const params     = [];
 
     if (req.query.user_id) {
-      conditions.push('l.user_id = ?');
       params.push(req.query.user_id);
+      conditions.push(`l.user_id = $${params.length}`);
     }
     if (req.query.status) {
-      conditions.push('l.status = ?');
       params.push(req.query.status);
+      conditions.push(`l.status = $${params.length}`);
     }
     if (req.query.action) {
-      conditions.push('l.action = ?');
       params.push(req.query.action);
+      conditions.push(`l.action = $${params.length}`);
     }
     if (req.query.from) {
-      conditions.push('l.timestamp >= ?');
       params.push(new Date(req.query.from));
+      conditions.push(`l.timestamp >= $${params.length}`);
     }
     if (req.query.to) {
-      conditions.push('l.timestamp <= ?');
       params.push(new Date(req.query.to));
+      conditions.push(`l.timestamp <= $${params.length}`);
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const [rows] = await pool.execute(
-      `SELECT l.id, l.user_id, u.name AS user_name, u.role, l.timestamp,
-              l.ip_address, l.user_agent, l.status, l.action
-       FROM logs l
-       LEFT JOIN users u ON l.user_id = u.id
-       ${where}
-       ORDER BY l.timestamp DESC
-       LIMIT ${limit} OFFSET ${offset}`,
-      params
-    );
+    const query = `
+      SELECT l.id, l.user_id, u.name AS user_name, u.role, l.timestamp,
+             l.ip_address, l.user_agent, l.status, l.action
+      FROM logs l
+      LEFT JOIN users u ON l.user_id = u.id
+      ${where}
+      ORDER BY l.timestamp DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+    `;
 
-    const [countRows] = await pool.execute(
+    const result = await pool.query(query, [...params, limit, offset]);
+
+    const countRes = await pool.query(
       `SELECT COUNT(*) AS total FROM logs l ${where}`,
       params
     );
 
+    const total = parseInt(countRes.rows[0].total);
+
     res.json({
-      logs:  rows,
-      total: countRows[0].total,
+      logs:  result.rows,
+      total,
       page,
       limit,
-      pages: Math.ceil(countRows[0].total / limit)
+      pages: Math.ceil(total / limit)
     });
   } catch (err) {
     console.error('[Logs Error]', err);
@@ -80,34 +82,38 @@ router.get('/', requireRole('admin', 'faculty'), async (req, res) => {
  */
 router.get('/stats', requireRole('admin'), async (req, res) => {
   try {
-    const [daily] = await pool.execute(`
+    const dailyRes = await pool.query(`
       SELECT
-        DATE(timestamp) AS date,
+        timestamp::date AS date,
         COUNT(*) AS total,
-        SUM(status = 'success') AS success,
-        SUM(status = 'failure') AS failure
+        COUNT(*) FILTER (WHERE status = 'success') AS success,
+        COUNT(*) FILTER (WHERE status = 'failure') AS failure
       FROM logs
-      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-      GROUP BY DATE(timestamp)
+      WHERE timestamp >= NOW() - INTERVAL '7 days'
+      GROUP BY timestamp::date
       ORDER BY date ASC
     `);
 
-    const [summary] = await pool.execute(`
+    const summaryRes = await pool.query(`
       SELECT
         COUNT(*) AS total_logins,
-        SUM(status = 'success') AS successful,
-        SUM(status = 'failure') AS failed,
+        COUNT(*) FILTER (WHERE status = 'success') AS successful,
+        COUNT(*) FILTER (WHERE status = 'failure') AS failed,
         COUNT(DISTINCT user_id) AS active_users
       FROM logs
-      WHERE DATE(timestamp) = CURDATE()
+      WHERE timestamp::date = CURRENT_DATE
     `);
 
-    const [weekly] = await pool.execute(`
+    const weeklyRes = await pool.query(`
       SELECT COUNT(*) AS total FROM logs
-      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      WHERE timestamp >= NOW() - INTERVAL '7 days'
     `);
 
-    res.json({ daily, summary: summary[0], weekly: weekly[0].total });
+    res.json({ 
+      daily: dailyRes.rows, 
+      summary: summaryRes.rows[0], 
+      weekly: parseInt(weeklyRes.rows[0].total) 
+    });
   } catch (err) {
     console.error('[Stats Error]', err);
     res.status(500).json({ error: 'Server error' });

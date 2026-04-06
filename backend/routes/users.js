@@ -12,12 +12,12 @@ router.use(verifyToken);
  */
 router.get('/', requireRole('admin'), async (req, res) => {
   try {
-    const [rows] = await pool.execute(
+    const result = await pool.query(
       `SELECT id, name, email, role, risk_score, created_at FROM users ORDER BY risk_score DESC`
     );
 
     // Add risk level label
-    const users = rows.map(u => ({
+    const users = result.rows.map(u => ({
       ...u,
       risk_level: u.risk_score >= 60 ? 'high' : u.risk_score >= 30 ? 'medium' : 'low'
     }));
@@ -46,18 +46,18 @@ router.post('/', requireRole('admin'), async (req, res) => {
     }
 
     // Check duplicate email
-    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
-    if (existing.length > 0) {
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Email already in use' });
     }
 
     const hashed = await bcrypt.hash(password, 10);
-    const [result] = await pool.execute(
-      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
+    const result = await pool.query(
+      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id',
       [name, email, hashed, role]
     );
 
-    res.status(201).json({ message: 'User created', id: result.insertId });
+    res.status(201).json({ message: 'User created', id: result.rows[0].id });
   } catch (err) {
     console.error('[Create User Error]', err);
     res.status(500).json({ error: 'Server error' });
@@ -76,13 +76,13 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
     const updates = [];
     const params  = [];
 
-    if (name)  { updates.push('name = ?');  params.push(name); }
-    if (email) { updates.push('email = ?'); params.push(email); }
-    if (role)  { updates.push('role = ?');  params.push(role); }
+    if (name)  { params.push(name);      updates.push(`name = $${params.length}`); }
+    if (email) { params.push(email);     updates.push(`email = $${params.length}`); }
+    if (role)  { params.push(role);      updates.push(`role = $${params.length}`); }
     if (password) {
       const hashed = await bcrypt.hash(password, 10);
-      updates.push('password = ?');
       params.push(hashed);
+      updates.push(`password = $${params.length}`);
     }
 
     if (updates.length === 0) {
@@ -90,8 +90,8 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
     }
 
     params.push(id);
-    await pool.execute(
-      `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
+    await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${params.length}`,
       params
     );
 
@@ -114,7 +114,7 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
 
-    await pool.execute('DELETE FROM users WHERE id = ?', [id]);
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
     res.json({ message: 'User deleted' });
   } catch (err) {
     console.error('[Delete User Error]', err);

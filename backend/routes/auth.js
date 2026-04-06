@@ -24,25 +24,24 @@ router.post('/login', async (req, res) => {
 
   try {
     // Find user
-    const [rows] = await pool.execute(
-      'SELECT id, name, email, password, role FROM users WHERE email = ?',
+    const result = await pool.query(
+      'SELECT id, name, email, password, role FROM users WHERE email = $1',
       [email]
     );
 
-    if (rows.length === 0) {
-      // Log failed attempt (unknown user)
+    if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const user = rows[0];
+    const user = result.rows[0];
     const passwordMatch = await bcrypt.compare(password, user.password);
 
     const status = passwordMatch ? 'success' : 'failure';
 
     // Log the attempt
-    await pool.execute(
+    await pool.query(
       `INSERT INTO logs (user_id, timestamp, ip_address, user_agent, status, action)
-       VALUES (?, ?, ?, ?, ?, 'login')`,
+       VALUES ($1, $2, $3, $4, $5, 'login')`,
       [user.id, new Date(now), ip, userAgent, status]
     );
 
@@ -73,16 +72,16 @@ router.post('/login', async (req, res) => {
 
 /**
  * POST /api/auth/logout
- * Logs the logout action (JWT is stateless; client discards token).
+ * Logs the logout action.
  */
 router.post('/logout', require('../middleware/auth').verifyToken, async (req, res) => {
   try {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
     const userAgent = req.headers['user-agent'] || 'Unknown';
 
-    await pool.execute(
+    await pool.query(
       `INSERT INTO logs (user_id, timestamp, ip_address, user_agent, status, action)
-       VALUES (?, NOW(), ?, ?, 'success', 'logout')`,
+       VALUES ($1, NOW(), $2, $3, 'success', 'logout')`,
       [req.user.id, ip, userAgent]
     );
 

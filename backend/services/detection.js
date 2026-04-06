@@ -20,19 +20,19 @@ const RULES = {
  * Called immediately after every login attempt.
  */
 async function runDetection(userId, ip, status, timestamp) {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
     const alerts = [];
 
     // ── Rule 1: Failed Logins ──────────────────────────────────────────────
     const windowStart1 = new Date(timestamp - RULES.FAILED_LOGINS.window * 60 * 1000);
-    const [failedRows] = await conn.execute(
+    const failedRes = await client.query(
       `SELECT COUNT(*) AS cnt FROM logs
-       WHERE user_id = ? AND status = 'failure'
-       AND timestamp >= ?`,
+       WHERE user_id = $1 AND status = 'failure'
+       AND timestamp >= $2`,
       [userId, windowStart1]
     );
-    const failedCount = failedRows[0].cnt;
+    const failedCount = parseInt(failedRes.rows[0].cnt);
 
     if (failedCount > RULES.FAILED_LOGINS.threshold) {
       alerts.push({
@@ -46,13 +46,13 @@ async function runDetection(userId, ip, status, timestamp) {
 
     // ── Rule 2: IP Anomaly ─────────────────────────────────────────────────
     const windowStart2 = new Date(timestamp - RULES.IP_ANOMALY.window * 60 * 1000);
-    const [ipRows] = await conn.execute(
+    const ipRes = await client.query(
       `SELECT COUNT(DISTINCT ip_address) AS cnt FROM logs
-       WHERE user_id = ? AND status = 'success'
-       AND timestamp >= ?`,
+       WHERE user_id = $1 AND status = 'success'
+       AND timestamp >= $2`,
       [userId, windowStart2]
     );
-    const distinctIPs = ipRows[0].cnt;
+    const distinctIPs = parseInt(ipRes.rows[0].cnt);
 
     if (distinctIPs >= RULES.IP_ANOMALY.threshold) {
       alerts.push({
@@ -69,50 +69,51 @@ async function runDetection(userId, ip, status, timestamp) {
     // ── Insert Alerts ──────────────────────────────────────────────────────
     for (const alert of alerts) {
       // Avoid duplicate alerts (same user + same type in last 10 min)
-      const [existing] = await conn.execute(
+      const existing = await client.query(
         `SELECT id FROM alerts
-         WHERE user_id = ? AND type = ?
-         AND timestamp >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+         WHERE user_id = $1 AND type = $2
+         AND timestamp >= NOW() - INTERVAL '10 minutes'`,
         [alert.user_id, alert.type]
       );
-      if (existing.length === 0) {
-        await conn.execute(
+      if (existing.rows.length === 0) {
+        await client.query(
           `INSERT INTO alerts (user_id, type, message, severity, timestamp, resolved)
-           VALUES (?, ?, ?, ?, ?, FALSE)`,
+           VALUES ($1, $2, $3, $4, $5, FALSE)`,
           [alert.user_id, alert.type, alert.message, alert.severity, alert.timestamp]
         );
       }
     }
 
     // ── Update Risk Score ──────────────────────────────────────────────────
-    await updateRiskScore(userId, conn);
+    await updateRiskScore(userId, client);
 
   } finally {
-    conn.release();
+    client.release();
   }
 }
 
 /**
  * Recalculate and persist a user's risk score based on recent alert history.
  */
-async function updateRiskScore(userId, conn) {
-  const [alertRows] = await conn.execute(
+async function updateRiskScore(userId, client) {
+  const res = await client.query(
     `SELECT type, COUNT(*) AS cnt FROM alerts
-     WHERE user_id = ? AND resolved = FALSE
-     AND timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+     WHERE user_id = $1 AND resolved = FALSE
+     AND timestamp >= NOW() - INTERVAL '24 hours'
      GROUP BY type`,
     [userId]
   );
 
   let score = 0;
-  for (const row of alertRows) {
-    if (row.type === 'failed_logins') score += row.cnt * RULES.FAILED_LOGINS.score;
-    if (row.type === 'ip_anomaly')    score += row.cnt * RULES.IP_ANOMALY.score;
+  for (const row of res.rows) {
+    const count = parseInt(row.cnt);
+    if (row.type === 'failed_logins') score += count * RULES.FAILED_LOGINS.score;
+    if (row.type === 'ip_anomaly')    score += count * RULES.IP_ANOMALY.score;
   }
 
   score = Math.min(score, 100);
-  await conn.execute(
-    `UPDATE users SET risk_score = ? WHERE id = ?`,
+  await client.query(
+    `UPDATE users SET risk_score = $1 WHERE id = $2`,
     [score, userId]
   );
 }

@@ -1,28 +1,27 @@
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const dotenv = require('dotenv');
 dotenv.config();
 
-// Create connection pool for better performance
-const pool = mysql.createPool({
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || 3306,
-  user:     process.env.DB_USER     || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME     || 'academic_security_db',
-  waitForConnections: true,
-  connectionLimit:    10,
-  queueLimit:         0
+// PostgreSQL connection pool (Supabase)
+const pool = new Pool({
+  connectionString: process.env.DB_URL,
+  ssl: {
+    rejectUnauthorized: false // Required for Supabase/Render
+  }
 });
 
-// Test the connection at startup
+/**
+ * Test the connection at startup
+ * Note: pg.Pool doesn't connect until the first query is made,
+ * but pool.query('SELECT NOW()') verifies the credentials.
+ */
 async function testConnection() {
   try {
-    const conn = await pool.getConnection();
-    console.log('✅ MySQL connected successfully');
-    conn.release();
+    const res = await pool.query('SELECT NOW()');
+    console.log('✅ Supabase PostgreSQL connected successfully at:', res.rows[0].now);
   } catch (err) {
-    console.error('❌ MySQL connection failed:', err.message);
-    console.error('   → Check your DB credentials in backend/.env');
+    console.error('❌ Supabase connection failed:', err.message);
+    console.error('   → Check your connection string in backend/.env');
     process.exit(1);
   }
 }
