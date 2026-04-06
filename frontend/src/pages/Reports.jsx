@@ -29,9 +29,10 @@ export default function Reports() {
     if (from)   params.append('from',   from)
     if (to)     params.append('to',     to)
     if (status) params.append('status', status)
-    const token = localStorage.getItem('token')
-    const qs    = params.toString()
-    const url   = `/api/reports/logs.csv${qs ? '?' + qs : ''}`
+    const token   = localStorage.getItem('token')
+    const qs      = params.toString()
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api'
+    const url     = `${apiBase}/reports/logs.csv${qs ? '?' + qs : ''}`
 
     try {
       const res = await fetch(url, {

@@ -58,7 +58,7 @@ export default function Login() {
         {error && (
           <div className="login-error">
             <span>⚠️</span>
-            {error}
+            {typeof error === 'object' ? (error.message || 'An unexpected error occurred') : error}
           </div>
         )}
 
