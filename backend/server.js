@@ -10,16 +10,23 @@ const app = express();
 // ─── Middleware ────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:5173',
-  process.env.FRONTEND_URL
+  process.env.FRONTEND_URL?.replace(/\/$/, ''), // Remove trailing slash if present
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
+    // 1. Allow if no origin (like mobile apps, curl, or local development)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+
+    // 2. Allow if in local development mode
+    if (process.env.NODE_ENV === 'development') return callback(null, true);
+
+    // 3. Normalize and check list
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    if (allowedOrigins.includes(normalizedOrigin)) {
       callback(null, true);
     } else {
+      console.warn(`[CORS Blocked] Origin: ${origin}. Allowed:`, allowedOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
